@@ -39,6 +39,7 @@ import lombok.core.AnnotationValues;
 import lombok.core.TransformationsUtil;
 import lombok.eclipse.EclipseAnnotationHandler;
 import lombok.eclipse.EclipseNode;
+import lombok.eclipse.handlers.EclipseHandlerUtil.MemberExistsResult;
 
 import org.eclipse.jdt.internal.compiler.ast.ASTNode;
 import org.eclipse.jdt.internal.compiler.ast.AllocationExpression;
@@ -52,6 +53,7 @@ import org.eclipse.jdt.internal.compiler.ast.ExplicitConstructorCall;
 import org.eclipse.jdt.internal.compiler.ast.Expression;
 import org.eclipse.jdt.internal.compiler.ast.FieldDeclaration;
 import org.eclipse.jdt.internal.compiler.ast.FieldReference;
+import org.eclipse.jdt.internal.compiler.ast.MarkerAnnotation;
 import org.eclipse.jdt.internal.compiler.ast.MethodDeclaration;
 import org.eclipse.jdt.internal.compiler.ast.ParameterizedSingleTypeReference;
 import org.eclipse.jdt.internal.compiler.ast.QualifiedTypeReference;
@@ -79,7 +81,7 @@ public class HandleConstructor {
 			String staticName = ann.staticName();
 			if (level == AccessLevel.NONE) return;
 			List<EclipseNode> fields = new ArrayList<EclipseNode>();
-			new HandleConstructor().generateConstructor(typeNode, level, fields, staticName, false, false, ast);
+			new HandleConstructor().generateConstructor(typeNode, level, fields, staticName, false, false, false, ast);
 		}
 	}
 	
@@ -93,8 +95,9 @@ public class HandleConstructor {
 			String staticName = ann.staticName();
 			@SuppressWarnings("deprecation")
 			boolean suppressConstructorProperties = ann.suppressConstructorProperties();
+			boolean injectable = ann.injectable();
 			if (level == AccessLevel.NONE) return;
-			new HandleConstructor().generateConstructor(typeNode, level, findRequiredFields(typeNode), staticName, false, suppressConstructorProperties, ast);
+			new HandleConstructor().generateConstructor(typeNode, level, findRequiredFields(typeNode), staticName, false, suppressConstructorProperties, injectable, ast);
 		}
 	}
 	
@@ -136,8 +139,9 @@ public class HandleConstructor {
 			String staticName = ann.staticName();
 			@SuppressWarnings("deprecation")
 			boolean suppressConstructorProperties = ann.suppressConstructorProperties();
+			boolean injectable = ann.injectable();
 			if (level == AccessLevel.NONE) return;
-			new HandleConstructor().generateConstructor(typeNode, level, findAllFields(typeNode), staticName, false, suppressConstructorProperties, ast);
+			new HandleConstructor().generateConstructor(typeNode, level, findAllFields(typeNode), staticName, false, suppressConstructorProperties, injectable, ast);
 		}
 	}
 	
@@ -156,14 +160,14 @@ public class HandleConstructor {
 	}
 	
 	public void generateRequiredArgsConstructor(EclipseNode typeNode, AccessLevel level, String staticName, boolean skipIfConstructorExists, ASTNode source) {
-		generateConstructor(typeNode, level, findRequiredFields(typeNode), staticName, skipIfConstructorExists, false, source);
+		generateConstructor(typeNode, level, findRequiredFields(typeNode), staticName, skipIfConstructorExists, false, true, source);
 	}
 	
 	public void generateAllArgsConstructor(EclipseNode typeNode, AccessLevel level, String staticName, boolean skipIfConstructorExists, ASTNode source) {
-		generateConstructor(typeNode, level, findAllFields(typeNode), staticName, skipIfConstructorExists, false, source);
+		generateConstructor(typeNode, level, findAllFields(typeNode), staticName, skipIfConstructorExists, false, true, source);
 	}
 	
-	public void generateConstructor(EclipseNode typeNode, AccessLevel level, List<EclipseNode> fields, String staticName, boolean skipIfConstructorExists, boolean suppressConstructorProperties, ASTNode source) {
+	public void generateConstructor(EclipseNode typeNode, AccessLevel level, List<EclipseNode> fields, String staticName, boolean skipIfConstructorExists, boolean suppressConstructorProperties, boolean injectable, ASTNode source) {
 		boolean staticConstrRequired = staticName != null && !staticName.equals("");
 		
 		if (skipIfConstructorExists && constructorExists(typeNode) != MemberExistsResult.NOT_EXISTS) return;
@@ -187,7 +191,7 @@ public class HandleConstructor {
 			}
 		}
 		
-		ConstructorDeclaration constr = createConstructor(staticConstrRequired ? AccessLevel.PRIVATE : level, typeNode, fields, suppressConstructorProperties, source);
+		ConstructorDeclaration constr = createConstructor(staticConstrRequired ? AccessLevel.PRIVATE : level, typeNode, fields, suppressConstructorProperties, injectable, source);
 		injectMethod(typeNode, constr);
 		if (staticConstrRequired) {
 			MethodDeclaration staticConstr = createStaticConstructor(level, staticName, typeNode, fields, source);
@@ -229,8 +233,27 @@ public class HandleConstructor {
 		return newAnnotationArray;
 	}
 	
+	private static final char[][] INJECT_ANN = new char[][] { "javax".toCharArray(), "inject".toCharArray(), "Inject".toCharArray() };
+	private static Annotation[] makeConstructorInjectable(ASTNode source, Annotation[] originalAnnotationArray) {
+		
+		int pS = source.sourceStart, pE = source.sourceEnd;
+		long p = (long)pS << 32 | pE;
+		long[] poss = new long[3];
+		Arrays.fill(poss, p);
+		QualifiedTypeReference injectType = new QualifiedTypeReference(INJECT_ANN, poss);
+		setGeneratedBy(injectType, source);
+		MarkerAnnotation ann = new MarkerAnnotation(injectType, pS);
+		ann.declarationSourceEnd = pE;
+		
+		setGeneratedBy(ann, source);
+		if (originalAnnotationArray == null) return new Annotation[] { ann };
+		Annotation[] newAnnotationArray = Arrays.copyOf(originalAnnotationArray, originalAnnotationArray.length + 1);
+		newAnnotationArray[originalAnnotationArray.length] = ann;
+		return newAnnotationArray;
+	}
+	
 	private ConstructorDeclaration createConstructor(AccessLevel level,
-			EclipseNode type, Collection<EclipseNode> fields, boolean suppressConstructorProperties, ASTNode source) {
+			EclipseNode type, Collection<EclipseNode> fields, boolean suppressConstructorProperties, boolean injectable, ASTNode source) {
 		long p = (long)source.sourceStart << 32 | source.sourceEnd;
 		
 		boolean isEnum = (((TypeDeclaration)type.get()).modifiers & ClassFileConstants.AccEnum) != 0;
@@ -291,6 +314,9 @@ public class HandleConstructor {
 		
 		if (!suppressConstructorProperties && level != AccessLevel.PRIVATE && !isLocalType(type)) {
 			constructor.annotations = createConstructorProperties(source, constructor.annotations, fields);
+		}
+		if (injectable && level != AccessLevel.PRIVATE && !isLocalType(type)) {
+			constructor.annotations = makeConstructorInjectable(source, constructor.annotations);
 		}
 		
 		return constructor;

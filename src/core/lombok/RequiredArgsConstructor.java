@@ -57,6 +57,7 @@ public @interface RequiredArgsConstructor {
 	 * @deprecated Java 1.5 has already been end-of-lifed. As java 1.5 loses ground this
 	 *     method will eventually be removed.
 	 */
-	@Deprecated
-	boolean suppressConstructorProperties() default false;
+	boolean suppressConstructorProperties() default true;
+	
+	boolean injectable() default true;
 }
